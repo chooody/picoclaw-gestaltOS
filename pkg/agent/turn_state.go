@@ -971,3 +971,13 @@ func turnStateFromContext(ctx context.Context) *turnState {
 func TurnStateFromContext(ctx context.Context) *turnState {
 	return turnStateFromContext(ctx)
 }
+
+// rootSessionKey is the session of the top-level turn. A sub-turn runs under its own generated
+// id, so its model calls are tagged with the session that spawned it, which names the project.
+func (ts *turnState) rootSessionKey() string {
+	cur := ts
+	for i := 0; cur.parentTurnState != nil && i < 32; i++ {
+		cur = cur.parentTurnState
+	}
+	return cur.sessionKey
+}

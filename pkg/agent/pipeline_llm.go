@@ -81,7 +81,7 @@ func (p *Pipeline) CallLLM(
 	if exec.llmOpts == nil {
 		exec.llmOpts = make(map[string]any)
 	}
-	exec.llmOpts["gestalt_session"] = ts.sessionKey
+	exec.llmOpts["gestalt_session"] = ts.rootSessionKey()
 	exec.llmOpts["gestalt_agent"] = ts.agent.ID
 
 	exec.llmModel = exec.activeModel
@@ -109,7 +109,7 @@ func (p *Pipeline) CallLLM(
 				if exec.llmOpts == nil {
 					exec.llmOpts = make(map[string]any)
 				}
-				exec.llmOpts["gestalt_session"] = ts.sessionKey
+				exec.llmOpts["gestalt_session"] = ts.rootSessionKey()
 				exec.llmOpts["gestalt_agent"] = ts.agent.ID
 				if strings.TrimSpace(exec.llmModel) != "" && exec.llmModel != prevModel {
 					if err := p.applyBeforeLLMModelRewrite(ts, exec); err != nil {
