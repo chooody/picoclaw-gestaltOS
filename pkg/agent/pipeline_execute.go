@@ -572,6 +572,7 @@ toolLoop:
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
+		execCtx = tools.WithToolRootSession(execCtx, ts.rootSessionKey())
 		execCtx = tools.WithToolCallID(execCtx, toolCallID)
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,

@@ -124,6 +124,8 @@ type PromptBuildRequest struct {
 	AllowedSkills               []string
 	AllowedTools                []string
 	ToolUseFallback             bool
+	// RuntimeInTurn puts the runtime block on the current user message (prompt_cache_layout "tail").
+	RuntimeInTurn bool
 }
 
 type PromptContributor interface {

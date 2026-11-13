@@ -444,9 +444,13 @@ type AgentDefaults struct {
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
 	ContextManagerConfig      json.RawMessage    `json:"context_manager_config,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER_CONFIG"`
-	TurnProfile               TurnProfileConfig  `json:"turn_profile,omitempty"`
-	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
-	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
+	// PromptCacheLayout "tail" keeps the system prompt byte-stable across requests: the
+	// per-request runtime block (time, session, sender) rides on the current user message
+	// instead, so a server's prefix (KV) cache covers the system prompt and the history.
+	PromptCacheLayout   string            `json:"prompt_cache_layout,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_PROMPT_CACHE_LAYOUT"`
+	TurnProfile         TurnProfileConfig `json:"turn_profile,omitempty"`
+	MaxLLMRetries       int               `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
+	LLMRetryBackoffSecs int               `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
@@ -1280,6 +1284,10 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (sse/http only)
 	Headers map[string]string `json:"headers,omitempty"`
+	// PassSession adds "_session" (the top-level turn's session) and "_agent" to every call's
+	// arguments, for servers that act on behalf of a session. Off by default: a strict server
+	// may reject arguments its schema does not declare.
+	PassSession bool `json:"pass_session,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers

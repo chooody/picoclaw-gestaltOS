@@ -362,6 +362,19 @@ func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budge
 	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget)
 }
 
+// CompactBatch compacts only past trigger tokens, then down to target (see CompactionEngine).
+func (e *Engine) CompactBatch(ctx context.Context, sessionKey string, trigger, target int) (*CompactResult, error) {
+	if e.shouldIgnoreSession(sessionKey) || e.isStatelessSession(sessionKey) {
+		return &CompactResult{}, nil
+	}
+	conv, err := e.store.GetOrCreateConversation(ctx, sessionKey)
+	if err != nil {
+		return nil, fmt.Errorf("get conversation: %w", err)
+	}
+	e.initCompactionOnce()
+	return e.compaction.CompactBatch(ctx, conv.ConversationID, trigger, target)
+}
+
 // initCompactionOnce lazily initializes the compaction engine.
 func (e *Engine) initCompactionOnce() {
 	if e.compaction == nil {

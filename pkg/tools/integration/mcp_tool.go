@@ -38,6 +38,7 @@ type MCPTool struct {
 	workspace          string
 	maxInlineTextRunes int
 	runtimeEvents      runtimeevents.Bus
+	passSession        bool
 }
 
 // MCPToolCallPayload describes MCP tool execution runtime events.
@@ -61,6 +62,11 @@ func NewMCPTool(manager MCPManager, serverName string, tool *mcp.Tool) *MCPTool 
 
 func (t *MCPTool) SetMediaStore(store media.MediaStore) {
 	t.mediaStore = store
+}
+
+// SetPassSession makes every call carry "_session" and "_agent" (see MCPServerConfig.PassSession).
+func (t *MCPTool) SetPassSession(on bool) {
+	t.passSession = on
 }
 
 func (t *MCPTool) SetWorkspace(workspace string) {
@@ -256,6 +262,9 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 	startedAt := time.Now()
 	t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallStart, startedAt, false, "")
 
+	if t.passSession {
+		args = withSessionArgs(ctx, args)
+	}
 	result, err := t.manager.CallTool(ctx, t.serverName, t.tool.Name, args)
 	if err != nil {
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, err.Error())
@@ -278,6 +287,20 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 
 	t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, false, "")
 	return t.normalizeResultContent(ctx, result.Content)
+}
+
+func withSessionArgs(ctx context.Context, args map[string]any) map[string]any {
+	out := make(map[string]any, len(args)+2)
+	for k, v := range args {
+		out[k] = v
+	}
+	if s := toolshared.ToolRootSessionKey(ctx); s != "" {
+		out["_session"] = s
+	}
+	if a := toolshared.ToolAgentID(ctx); a != "" {
+		out["_agent"] = a
+	}
+	return out
 }
 
 func (t *MCPTool) publishRuntimeEvent(

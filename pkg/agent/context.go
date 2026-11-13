@@ -908,6 +908,7 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	}
 
 	dynamicChars := 0
+	runtimeForTurn := ""
 	if !req.SuppressDefaultSystemPrompt {
 		// Build short dynamic context (time, runtime, session) — changes per request
 		dynamicCtx := cb.buildDynamicContext(
@@ -927,8 +928,12 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 			Stable:  false,
 			Cache:   PromptCacheNone,
 		}
-		stringParts = append(stringParts, dynamicCtx)
-		contentBlocks = append(contentBlocks, promptContentBlock(runtimePart, nil))
+		if req.RuntimeInTurn {
+			runtimeForTurn = dynamicCtx
+		} else {
+			stringParts = append(stringParts, dynamicCtx)
+			contentBlocks = append(contentBlocks, promptContentBlock(runtimePart, nil))
+		}
 
 		if req.Summary != "" {
 			summaryPart := PromptPart{
@@ -1011,7 +1016,11 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// multimodal providers receive the uploaded image even when the user sends
 	// no accompanying text.
 	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
-		messages = append(messages, userPromptMessage(req.CurrentMessage, req.Media))
+		current := req.CurrentMessage
+		if runtimeForTurn != "" {
+			current = "<runtime>\n" + runtimeForTurn + "\n</runtime>\n\n" + current
+		}
+		messages = append(messages, userPromptMessage(current, req.Media))
 	}
 	if len(messages) == 0 {
 		messages = append(messages, userPromptMessage("", nil))

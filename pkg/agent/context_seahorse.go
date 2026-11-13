@@ -21,10 +21,36 @@ type seahorseContextManager struct {
 	engine   *seahorse.Engine
 	sessions session.SessionStore // for startup bootstrap
 	al       *AgentLoop           // for resolving the agent that owns a session
+	batch    seahorseBatch
+}
+
+// seahorseBatch is context_manager_config {"batch": {"trigger": 0.75, "target": 0.45}}:
+// after a turn, compact only once the context passes trigger × window, then down to
+// target × window in one pass. Without it every turn may fold the oldest messages.
+type seahorseBatch struct {
+	Trigger float64 `json:"trigger"`
+	Target  float64 `json:"target"`
+}
+
+func parseSeahorseBatch(raw json.RawMessage) seahorseBatch {
+	var cfg struct {
+		Batch *seahorseBatch `json:"batch"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &cfg) != nil || cfg.Batch == nil {
+		return seahorseBatch{}
+	}
+	b := *cfg.Batch
+	if b.Trigger <= 0 || b.Trigger > 0.95 {
+		b.Trigger = seahorse.ContextThreshold
+	}
+	if b.Target <= 0 || b.Target >= b.Trigger {
+		b.Target = b.Trigger * 0.6
+	}
+	return b
 }
 
 // newSeahorseContextManager creates a seahorse-backed ContextManager.
-func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager, error) {
+func newSeahorseContextManager(raw json.RawMessage, al *AgentLoop) (ContextManager, error) {
 	if al == nil {
 		return nil, fmt.Errorf("seahorse: AgentLoop is required")
 	}
@@ -49,6 +75,7 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 		engine:   engine,
 		sessions: agent.Sessions,
 		al:       al,
+		batch:    parseSeahorseBatch(raw),
 	}
 
 	// Register seahorse tools with the agent's tool registry
@@ -135,6 +162,12 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 	// context shrinks below budget (spec lines ~1410).
 	if req.Reason == ContextCompressReasonRetry && req.Budget > 0 {
 		_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
+		return err
+	}
+
+	if req.Reason == ContextCompressReasonSummarize && m.batch.Trigger > 0 && req.Budget > 0 {
+		_, err := m.engine.CompactBatch(ctx, req.SessionKey,
+			int(float64(req.Budget)*m.batch.Trigger), int(float64(req.Budget)*m.batch.Target))
 		return err
 	}
 

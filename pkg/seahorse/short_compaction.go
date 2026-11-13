@@ -166,6 +166,48 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 	return result, nil
 }
 
+// CompactBatch leaves the conversation alone until it reaches trigger tokens, then compacts
+// in one pass down to target, keeping the fresh tail. Between passes the history is
+// unchanged, so a server's prefix (KV) cache keeps covering it.
+func (e *CompactionEngine) CompactBatch(ctx context.Context, convID int64, trigger, target int) (*CompactResult, error) {
+	result := &CompactResult{}
+	tokens, err := e.store.GetContextTokenCount(ctx, convID)
+	if err != nil || tokens < trigger {
+		return result, err
+	}
+	before := tokens
+	for iter := 0; iter < MaxCompactIterations && tokens > target; iter++ {
+		id, err := e.compactLeaf(ctx, convID)
+		if err != nil {
+			return result, err
+		}
+		if id == nil {
+			id, err = e.compactCondensed(ctx, convID)
+			if err != nil {
+				return result, err
+			}
+			if id == nil {
+				break
+			}
+			result.CondensedSummaries++
+		} else {
+			result.LeafSummaries++
+		}
+		result.SummariesCreated = append(result.SummariesCreated, *id)
+		if tokens, err = e.store.GetContextTokenCount(ctx, convID); err != nil {
+			return result, err
+		}
+	}
+	if tokens < before {
+		result.TokensSaved = before - tokens
+	}
+	logger.InfoCF("seahorse", "compact_batch", map[string]any{
+		"conv_id": convID, "before": before, "after": tokens,
+		"leaf": result.LeafSummaries, "condensed": result.CondensedSummaries,
+	})
+	return result, nil
+}
+
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
 // When force is true, FreshTailCount protection is bypassed (used by CompactUntilUnder).
 func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force ...bool) (*string, error) {

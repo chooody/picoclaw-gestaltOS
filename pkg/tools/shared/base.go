@@ -51,6 +51,7 @@ var (
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
 	ctxKeyToolCallID       = &toolCtxKey{"toolCallID"}
+	ctxKeyRootSessionKey   = &toolCtxKey{"rootSessionKey"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -87,6 +88,21 @@ func WithToolSessionContext(
 	ctx = context.WithValue(ctx, ctxKeySessionKey, sessionKey)
 	ctx = context.WithValue(ctx, ctxKeySessionScope, session.CloneScope(scope))
 	return ctx
+}
+
+// WithToolRootSession records the session of the top-level turn. A sub-turn runs under a
+// generated id; tools that report to an outside system name the session that owns the work.
+func WithToolRootSession(ctx context.Context, sessionKey string) context.Context {
+	return context.WithValue(ctx, ctxKeyRootSessionKey, sessionKey)
+}
+
+// ToolRootSessionKey is the top-level turn's session, falling back to the turn's own session.
+func ToolRootSessionKey(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyRootSessionKey).(string); ok && v != "" {
+		return v
+	}
+	v, _ := ctx.Value(ctxKeySessionKey).(string)
+	return v
 }
 
 // ToolChannel extracts the channel from ctx, or "" if unset.
