@@ -381,10 +381,13 @@ func registerSharedTools(
 				subagentTool.SetSpawner(NewSubTurnSpawner(al))
 				agent.Tools.Register(subagentTool)
 			}
-			if dt := cfg.Tools.DelegateTask; dt.Enabled && dt.PrepareTool != "" && agentID != dt.AgentID {
+			if dt := cfg.Tools.DelegateTask; dt.Enabled && (dt.PrepareURL != "" || dt.PrepareTool != "") && agentID != dt.AgentID {
 				// The worker itself does not get it, so a worker cannot delegate onward.
+				// PrepareURL posts to gestalt-prepare. A prepare_tool name is the old
+				// in-process MCP lookup and is not used when the URL is set.
 				reg := agent.Tools
 				delegateTask := tools.NewDelegateTaskTool(subagentManager, reg.Get, dt.PrepareTool, dt.AgentID)
+				delegateTask.SetPrepareHTTP(dt.PrepareURL, dt.PrepareToken)
 				delegateTask.SetSpawner(NewSubTurnSpawner(al))
 				agent.Tools.Register(delegateTask)
 			}

@@ -889,13 +889,19 @@ type ToolConfig struct {
 }
 
 // DelegateTaskConfig enables the delegate_task tool: a brief (problem,
-// resources, success criteria) is turned into a prompt by PrepareTool (a
-// registered tool name, e.g. an MCP tool "mcp_<server>_<tool>"), and AgentID
-// is spawned with exactly that prompt.
+// resources, success criteria) is turned into a prompt by gestalt-prepare,
+// and AgentID is spawned with exactly that prompt.
+//
+// PrepareURL is the prepare service's MCP endpoint (http://host:port/mcp).
+// When it is set, delegate_task posts tools/call delegate_prepare there.
+// It does not look up an in-process MCP tool. PrepareTool remains only for
+// older configs that named a registered tool.
 type DelegateTaskConfig struct {
-	Enabled     bool   `json:"enabled"`
-	PrepareTool string `json:"prepare_tool,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	PrepareURL   string `json:"prepare_url,omitempty"`
+	PrepareToken string `json:"prepare_token,omitempty"`
+	PrepareTool  string `json:"prepare_tool,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
 }
 
 type MessageToolsConfig struct {

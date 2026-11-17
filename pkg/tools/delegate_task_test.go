@@ -2,6 +2,11 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +74,110 @@ func TestDelegateTaskSpawnsTheWorkerWithExactlyTheBuiltPrompt(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no callback")
+	}
+}
+
+func TestDelegateTaskPostsToPrepareAndDoesNotLookUpMCP(t *testing.T) {
+	var gotPath, gotTool, gotAuth string
+	var gotArgs map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal(raw, &rpc)
+		gotTool = rpc.Params.Name
+		gotArgs = rpc.Params.Arguments
+		if rpc.Method != "tools/call" {
+			t.Errorf("method %s", rpc.Method)
+		}
+		text, _ := json.Marshal(map[string]string{
+			"prompt": "built prompt", "ticket_id": "TI-outer", "bundle_id": "CB-outer",
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{
+				"isError": false,
+				"content": []map[string]string{{"type": "text", "text": string(text)}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	sp := &fakeSpawner{cfgs: make(chan SubTurnConfig, 1)}
+	tool := NewDelegateTaskTool(nil, func(string) (Tool, bool) {
+		t.Error("delegate_task looked up an in-process tool")
+		return nil, false
+	}, "mcp_gestalt_delegate_prepare", "worker")
+	tool.SetPrepareHTTP(srv.URL+"/mcp", "test-token")
+	tool.SetSpawner(sp)
+
+	res := tool.ExecuteAsync(context.Background(), map[string]any{
+		"problem": "probe the outer handoff", "success_criteria": []any{"prepare was called"},
+	}, nil)
+	if res.IsError || !strings.Contains(res.ForLLM, "TI-outer") {
+		t.Fatalf("result: %+v", res)
+	}
+	if gotPath != "/mcp" || gotTool != "delegate_prepare" {
+		t.Fatalf("posted %s tool %s", gotPath, gotTool)
+	}
+	if gotAuth != "Bearer test-token" {
+		t.Fatal("prepare bearer was not sent")
+	}
+	if gotArgs["problem"] != "probe the outer handoff" {
+		t.Fatalf("args %#v", gotArgs)
+	}
+	select {
+	case cfg := <-sp.cfgs:
+		if cfg.SystemPrompt != "built prompt" {
+			t.Fatalf("worker prompt %q", cfg.SystemPrompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker was not started")
+	}
+}
+
+func TestDelegateTaskLivePrepare(t *testing.T) {
+	if os.Getenv("GESTALT_DELEGATE_LIVE") != "1" {
+		t.Skip("set GESTALT_DELEGATE_LIVE=1 to post one brief at the running gestalt-prepare")
+	}
+	url := os.Getenv("GESTALT_PREPARE_URL")
+	if url == "" {
+		url = "http://127.0.0.1:38496/mcp"
+	}
+	sp := &fakeSpawner{cfgs: make(chan SubTurnConfig, 1)}
+	tool := NewDelegateTaskTool(nil, func(string) (Tool, bool) {
+		t.Error("delegate_task looked up an in-process tool")
+		return nil, false
+	}, "", "worker")
+	tool.SetPrepareHTTP(url, os.Getenv("GESTALT_PREPARE_TOKEN"))
+	tool.SetSpawner(sp)
+	res := tool.ExecuteAsync(context.Background(), map[string]any{
+		"problem":          "Delegate seam probe. Do not change files.",
+		"resources":        []any{"gestaltos/picoclaw/prepare/prepare_server.py"},
+		"success_criteria": []any{"the prompt names a ticket id"},
+		"label":            "Delegate seam probe",
+	}, nil)
+	if res.IsError {
+		t.Fatal(res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "ticket ") {
+		t.Fatalf("result did not name a ticket: %s", res.ForLLM)
+	}
+	select {
+	case cfg := <-sp.cfgs:
+		if !strings.Contains(cfg.SystemPrompt, "TI-") {
+			t.Fatal("worker prompt has no ticket id")
+		}
+		t.Logf("outer prepare url %s ticket line in result", url)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker was not started from the live prepare result")
 	}
 }
 

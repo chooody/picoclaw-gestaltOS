@@ -1,18 +1,24 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 )
 
 // DelegateTaskTool hands a task to a worker sub-agent whose prompt is built
-// elsewhere. The caller gives the problem, the starting resources and the
-// success criteria; a configured "prepare" tool (usually an MCP tool) turns
-// that brief into a prompt (for example by filing a ticket and running a
-// context builder) and returns it as JSON; the tool then spawns the
-// configured agent with exactly that prompt, in the background.
+// outside this process. The caller gives the problem, the starting resources
+// and the success criteria. When prepareURL is set, the tool POSTs
+// tools/call delegate_prepare to gestalt-prepare, which files the ticket and
+// asks the context builder for the prompt. It does not call an in-process
+// MCP tool. A prepareTool name is only the older lookup, used when no URL
+// is configured. The tool then spawns the configured agent with exactly
+// that prompt, in the background.
 //
 // The prepare tool's result must be JSON with at least "prompt"; "ticket_id",
 // "bundle_id" and "procedure_id" are reported back when present.
@@ -20,6 +26,8 @@ type DelegateTaskTool struct {
 	spawner      SubTurnSpawner
 	lookup       func(name string) (Tool, bool)
 	prepareTool  string
+	prepareURL   string
+	prepareToken string
 	agentID      string
 	defaultModel string
 	maxTokens    int
@@ -48,6 +56,13 @@ func NewDelegateTaskTool(
 // SetSpawner sets the SubTurnSpawner used to start the worker.
 func (t *DelegateTaskTool) SetSpawner(spawner SubTurnSpawner) {
 	t.spawner = spawner
+}
+
+// SetPrepareHTTP points the handoff at gestalt-prepare's MCP endpoint.
+// token may be empty when that service does not require a bearer.
+func (t *DelegateTaskTool) SetPrepareHTTP(url, token string) {
+	t.prepareURL = strings.TrimSpace(url)
+	t.prepareToken = token
 }
 
 func (t *DelegateTaskTool) Name() string {
@@ -104,18 +119,24 @@ func (t *DelegateTaskTool) ExecuteAsync(ctx context.Context, args map[string]any
 	if t.spawner == nil {
 		return ErrorResult("delegate_task: sub-agents are not configured")
 	}
-	prep, ok := t.lookup(t.prepareTool)
-	if !ok || prep == nil {
-		return ErrorResult(
-			fmt.Sprintf("delegate_task: prepare tool %q is not available (is its MCP server up?)", t.prepareTool),
-		)
-	}
-	res := prep.Execute(ctx, map[string]any{
+	brief := map[string]any{
 		"problem":          problem,
 		"resources":        stringList(args["resources"]),
 		"success_criteria": criteria,
 		"label":            label,
-	})
+	}
+	var res *ToolResult
+	if t.prepareURL != "" {
+		res = t.postPrepare(ctx, brief)
+	} else {
+		prep, ok := t.lookup(t.prepareTool)
+		if !ok || prep == nil {
+			return ErrorResult(
+				fmt.Sprintf("delegate_task: prepare tool %q is not available (is its MCP server up?)", t.prepareTool),
+			)
+		}
+		res = prep.Execute(ctx, brief)
+	}
 	if res == nil || res.IsError {
 		msg := "no result"
 		if res != nil {
@@ -172,6 +193,70 @@ func (t *DelegateTaskTool) ExecuteAsync(ctx context.Context, args map[string]any
 	}
 	return AsyncResult(fmt.Sprintf("Delegated to %s as %s. It runs in the background; its result arrives when done.",
 		who, strings.Join(parts, ", ")))
+}
+
+// postPrepare calls gestalt-prepare over HTTP. The body is one MCP tools/call
+// for delegate_prepare. The returned text is that tool's JSON (prompt, ticket_id).
+func (t *DelegateTaskTool) postPrepare(ctx context.Context, args map[string]any) *ToolResult {
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "delegate_prepare",
+			"arguments": args,
+		},
+	})
+	if err != nil {
+		return ErrorResult("delegate_task: could not encode the prepare call: " + err.Error())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.prepareURL, bytes.NewReader(payload))
+	if err != nil {
+		return ErrorResult("delegate_task: bad prepare url: " + err.Error())
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if t.prepareToken != "" {
+		req.Header.Set("Authorization", "Bearer "+t.prepareToken)
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ErrorResult("delegate_task: gestalt-prepare did not answer: " + err.Error())
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ErrorResult("delegate_task: reading gestalt-prepare failed: " + err.Error())
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ErrorResult(fmt.Sprintf("delegate_task: gestalt-prepare HTTP %d", resp.StatusCode))
+	}
+	var rpc struct {
+		Error  *struct{ Message string } `json:"error"`
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		return ErrorResult("delegate_task: gestalt-prepare returned non-JSON")
+	}
+	if rpc.Error != nil {
+		return ErrorResult("delegate_task: gestalt-prepare: " + rpc.Error.Message)
+	}
+	text := ""
+	if len(rpc.Result.Content) > 0 {
+		text = rpc.Result.Content[0].Text
+	}
+	if rpc.Result.IsError {
+		return ErrorResult("delegate_task: preparing the task failed: " + text)
+	}
+	if strings.TrimSpace(text) == "" {
+		return ErrorResult("delegate_task: gestalt-prepare returned an empty result")
+	}
+	return &ToolResult{ForLLM: text}
 }
 
 // stringList reads a JSON array of strings (or one string) from tool args.
